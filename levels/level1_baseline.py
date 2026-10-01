@@ -53,33 +53,29 @@ print("\n基准线：瞎猜 25.0%%；永远猜 %s（训练集最常见）在验�
 # nn.Linear(a, b)：要求输入最后一维是 a，把它换成 b，前面的维度原样不动。
 # 这里 [N, 1] -> [N, 4]。4 个输出就是 A C G U 各自的分数（logits）。
 model = nn.Linear(xtr.shape[1], F.n_letters(MOL))
-print("参数量 %d" % sum(p.numel() for p in model.parameters()))
-
-# ------------------------------------------------- 训练循环
-# 这五行是 PyTorch 的全部核心，后面六关一行都不会变：
-#   out  = model(x)         前向：算预测
-#   loss = lossfn(out, y)   算错得多离谱
-#   opt.zero_grad()         清掉上一轮的梯度（不清会累加，最经典的坑）
-#   loss.backward()         反向：算每个参数该往哪动
-#   opt.step()              真的动一下
 lossfn = nn.CrossEntropyLoss()
 opt = torch.optim.Adam(model.parameters(), lr=0.05)
+print("参数量", sum(p.numel() for p in model.parameters()))
 
-for ep in range(1, 301):
-    out = model(xtr)
-    loss = lossfn(out, ytr)
-    opt.zero_grad()
-    loss.backward()
-    opt.step()
-    if ep % 50 == 0:
-        with torch.no_grad():          # 评估不需要梯度，关掉省内存
-            atr = (model(xtr).argmax(-1) == ytr).float().mean().item()
-            ava = (model(xva).argmax(-1) == yva).float().mean().item()
-        print("  ep%3d  loss %.3f  训练 %.1f%%  验证 %.1f%%" % (ep, loss.item(), 100*atr, 100*ava))
+hist = []
+for ep_i in range(1, 301):
+    model.train()
+    loss = lossfn(model(xtr), ytr)
+    opt.zero_grad(); loss.backward(); opt.step()
+    if ep_i == 1 or ep_i % 5 == 0:
+        model.eval()
+        with torch.no_grad():
+            hist.append((ep_i,
+                         lossfn(model(xtr), ytr).item(),
+                         lossfn(model(xva), yva).item(),
+                         (model(xtr).argmax(-1) == ytr).float().mean().item(),
+                         (model(xva).argmax(-1) == yva).float().mean().item()))
 
-with torch.no_grad():
-    acc = (model(xva).argmax(-1) == yva).float().mean().item()
-print("\n验证集恢复率 %.1f%%（基准线 %.1f%%）" % (100*acc, 100*base_va))
+ep, ltr, lva, atr, ava = (np.array(c) for c in zip(*hist))
+best_i = int(ava.argmax())
+acc = float(ava[best_i])          # 记最好的一轮，和第 3 关之后 engine.fit 的口径一致
+print("验证恢复率：最好 %.1f%%（第 %d 轮），最后一轮 %.1f%%"
+      % (100*acc, ep[best_i], 100*ava[-1]))
 
 # ------------------------------------------------- 它学到了什么
 with torch.no_grad():
