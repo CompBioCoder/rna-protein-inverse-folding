@@ -1,23 +1,27 @@
-### AL ###
-#Template for AL projects for Dynamics 365 Business Central
-#launch.json folder
-.vscode/
-#Cache folder
-.alcache/
-#Symbols folder
-.alpackages/
-#Snapshots folder
-.snapshots/
-#Testing Output folder
-.output/
-#Extension App-file
-*.app
-#Rapid Application Development File
-rad.json
-#Translation Base-file
-*.g.xlf
-#License-files
-*.bclicense
-*.flf
-#Test results file
-TestResults.xml
+# 数据与产物:全在外置盘,一律不进仓库
+# 注意这三行同时挡住了软链接本身——git 会把软链接当普通文件提交,
+# 内容就是那串绝对路径,别人 clone 到的是死链,你的本地目录结构也公开了
+pdbs
+datasets
+runs
+*.pdb
+*.cif
+*.pt
+*.pth
+*.npz
+
+# Jupyter / Python
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+.venv/
+
+# macOS,ExFAT 卷上尤其会冒出来
+.DS_Store
+._*
+
+# Obsidian（这个仓库同时是一个 vault）
+.obsidian/workspace*
+.obsidian/cache
+
+# progress.json 是通关记录，故意不 ignore——几 KB，跟着一起备份
