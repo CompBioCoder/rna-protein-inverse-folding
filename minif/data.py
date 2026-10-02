@@ -17,14 +17,21 @@ def load(mol="rna", split=None, path=None):
         raise SystemExit("找不到 %s\n先跑：python prepare_data.py --mol %s"
                          % (os.path.normpath(path), mol))
     z = np.load(path, allow_pickle=True)
+    has_chi = "chi" in z.files
+    if not has_chi and mol == "rna":
+        print("[data] 这个数据集是旧版的，没有 chi 原子，糖苷扭转角会被填 0。\n"
+              "       重跑一次 python prepare_data.py 即可。")
     out = []
     for i in range(len(z["ids"])):
         if split is not None and z["split"][i] != split:
             continue
-        out.append({"id": str(z["ids"][i]), "seq": str(z["seqs"][i]),
-                    "coords": z["coords"][i].astype(np.float32),
-                    "resnum": z["resnum"][i].astype(np.int64),
-                    "partner": z["partner"][i].astype(np.int64)})
+        rec = {"id": str(z["ids"][i]), "seq": str(z["seqs"][i]),
+               "coords": z["coords"][i].astype(np.float32),
+               "resnum": z["resnum"][i].astype(np.int64),
+               "partner": z["partner"][i].astype(np.int64)}
+        if has_chi:
+            rec["chi"] = z["chi"][i].astype(np.float32)
+        out.append(rec)
     if not out:
         raise SystemExit("split=%r 一条都没有" % split)
     return out

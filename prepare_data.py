@@ -49,6 +49,10 @@ PURINES = set("AG")
 RNA_GLYC = {"A": "N9", "G": "N9", "C": "N1", "U": "N1"}   # 糖苷氮
 RNA_WC = {"A": "N1", "G": "N1", "C": "N3", "U": "N3"}     # WC 边主氢键原子
 RNA_WC2 = {"A": "N6", "G": "O6", "C": "N4", "U": "O4"}    # 次要氢键原子
+# 标准糖苷扭转角 chi 的另外两个原子：O4'（所有碱基相同）+ 碱基环上的那个碳
+#   嘌呤 (A,G)：O4'-C1'-N9-C4      嘧啶 (C,U)：O4'-C1'-N1-C2
+# 注意 "C4" 是碱基环上的碳，和糖环上的 "C4'" 是两个不同的原子
+RNA_CHI_C = {"A": "C4", "G": "C4", "C": "C2", "U": "C2"}
 
 # 这批 ID 我不保证每个都有效，脚本会自动跳过下不到或解析不出的。
 # 只是搜索接口不通时的应急，数据会偏少。
@@ -200,7 +204,7 @@ def parse_entry(text, mol):
         return None
     chain = max(by_chain, key=lambda ch: len(by_chain[ch]))
 
-    seq, coords, resnum, wc, wc2 = [], [], [], [], []
+    seq, coords, resnum, wc, wc2, chi = [], [], [], [], [], []
     nan3 = (float("nan"),) * 3
     for key, one, atoms in by_chain[chain]:
         if mol == "rna":
@@ -218,6 +222,8 @@ def parse_entry(text, mol):
         if mol == "rna":
             wc.append(atoms.get(RNA_WC[one], nan3))
             wc2.append(atoms.get(RNA_WC2[one], nan3))
+            # chi 要的两个原子，缺了就填 NaN（算出来的角会被置 0）
+            chi.append([atoms.get("O4'", nan3), atoms.get(RNA_CHI_C[one], nan3)])
 
     if len(seq) < c["min_len"]:
         return None
@@ -225,12 +231,14 @@ def parse_entry(text, mol):
     if mol == "rna":
         partner = pairing.detect_pairs(np.asarray(wc, dtype=np.float64),
                                        np.asarray(wc2, dtype=np.float64))
+        chi_arr = np.asarray(chi, dtype=np.float32)
     else:
         partner = np.full(L, -1, dtype=np.int64)
+        chi_arr = np.zeros((L, 2, 3), dtype=np.float32)
     return (chain, "".join(seq),
             np.asarray(coords, dtype=np.float32),
             np.asarray(resnum, dtype=np.int32),
-            partner.astype(np.int32))
+            partner.astype(np.int32), chi_arr)
 
 
 def kmers(s, k=3):
@@ -293,10 +301,10 @@ def main():
         got = parse_entry(txt, mol)
         if got is None:
             continue
-        ch, seq, xyz, rnum, partner = got
+        ch, seq, xyz, rnum, partner, chi_arr = got
         if not (c["min_len"] <= len(seq) <= c["max_len"]):
             continue
-        recs.append(("%s_%s" % (pid, ch), seq, xyz, rnum, partner))
+        recs.append(("%s_%s" % (pid, ch), seq, xyz, rnum, partner, chi_arr))
 
     if len(recs) < 15:
         sys.exit("只拿到 %d 条，太少。检查网络，或手动准备 ids.txt。" % len(recs))
@@ -324,7 +332,8 @@ def main():
     np.savez_compressed(out,
                         ids=obj([r[0] for r in recs]), seqs=obj([r[1] for r in recs]),
                         coords=obj([r[2] for r in recs]), resnum=obj([r[3] for r in recs]),
-                        partner=obj([r[4] for r in recs]), split=obj(split))
+                        partner=obj([r[4] for r in recs]), chi=obj([r[5] for r in recs]),
+                        split=obj(split))
     nt = sum(1 for s in split if s == "train")
     print("\n存好了：%s" % out)
     print("  %d 条，%d 个簇，训练 %d / 验证 %d（按簇划分，不是随机划分）"

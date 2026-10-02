@@ -40,18 +40,27 @@ def protein_helix(L=24, phi=-57., psi=-47., omega=180.):
 
 
 def rna_helix(L=20, twist=32.7, rise=2.81):
-    """A 型螺旋式的粗粒化 RNA：四种原子各放在自己的圆柱面上。
+    """A 型螺旋式的粗粒化 RNA。返回 (coords[L,4,3], chi_atoms[L,2,3])。
 
+    coords 依次是 P / C4' / C1' / N糖苷，chi_atoms 是 O4' / 碱基环碳。
     半径和相位是示意值，不是真实 A 型 RNA 的精确坐标。
-    这个结构只用来检查两件事：赝扭转角沿规则螺旋应当恒定；旋转平移不变性。
+    这个结构只用来检查两件事：扭转角沿规则螺旋应当恒定；旋转平移不变性。
     """
-    spec = [(8.8, 0.0), (9.0, 18.0), (7.0, 40.0), (4.5, 62.0)]   # (半径, 相位°)
+    # (半径, 相位°, 残基内的 z 偏移)
+    # z 偏移不能省：少了它，一个残基内的几个原子会落在同一平面上，
+    # 四点共面的二面角恒等于 0，chi 这一项就测不出任何东西了。
+    spec = [(8.8, 0.0, 0.0), (9.0, 18.0, 0.3), (7.0, 40.0, 0.9), (4.5, 62.0, 1.4)]
+    chi_spec = [(7.8, 30.0, 0.5), (3.6, 74.0, 1.9)]              # O4' / 碱基环碳
     out = np.zeros((L, 4, 3), dtype=np.float32)
+    chi = np.zeros((L, 2, 3), dtype=np.float32)
     for i in range(L):
-        for a, (r, ph) in enumerate(spec):
+        for a, (r, ph, dz) in enumerate(spec):
             t = np.deg2rad(twist * i + ph)
-            out[i, a] = (r*np.cos(t), r*np.sin(t), rise*i)
-    return out
+            out[i, a] = (r*np.cos(t), r*np.sin(t), rise*i + dz)
+        for a, (r, ph, dz) in enumerate(chi_spec):
+            t = np.deg2rad(twist * i + ph)
+            chi[i, a] = (r*np.cos(t), r*np.sin(t), rise*i + dz)
+    return out, chi
 
 
 def praxeolitic(p0, p1, p2, p3):
@@ -96,15 +105,18 @@ def main():
     ok.append(chir > 0 and abs(d1-3.8) < .1 and abs(d4-6.2) < .6 and abs(dcb-1.53) < .1)
 
     # 4. RNA：规则螺旋上赝扭转角应当沿链恒定
-    R = rna_helix()
-    t = F.torsions_rna(R)
+    R, Rchi = rna_helix()
+    t = F.torsions_rna(R, Rchi)
     eta = np.degrees(np.arctan2(t[:, 0], t[:, 3]))[2:-2]
     theta = np.degrees(np.arctan2(t[:, 1], t[:, 4]))[2:-2]
     chi = np.degrees(np.arctan2(t[:, 2], t[:, 5]))[2:-2]
     sd = lambda a: np.std(((a - a[0] + 180) % 360) - 180)
     print("4. RNA 规则螺旋 eta=%.1f±%.2f  theta=%.1f±%.2f  chi=%.1f±%.2f （标准差应≈0）"
           % (eta.mean(), sd(eta), theta.mean(), sd(theta), chi.mean(), sd(chi)))
-    ok.append(sd(eta) < .1 and sd(theta) < .1 and sd(chi) < .1)
+    # 既要恒定，又不能恒等于 0——四点共面时二面角必然是 0，
+    # 那种情况下 chi 坏掉也会"通过"，必须挡住。
+    ok.append(sd(eta) < .1 and sd(theta) < .1 and sd(chi) < .1
+              and abs(chi.mean()) > 1.0)
 
     # 5. 旋转+平移不变性 —— 五问第 1 问的实证
     res5 = []
@@ -112,7 +124,11 @@ def main():
         L = xyz.shape[0]; rn = np.arange(L, dtype=np.int64)
         Q = rand_rot()
         xyz2 = ((xyz.reshape(-1, 3) @ Q.T) + np.array([13., -7., 42.])).reshape(xyz.shape).astype(np.float32)
-        f1, f2 = F.featurize(xyz, rn, mol, k=8), F.featurize(xyz2, rn, mol, k=8)
+        ck = Rchi if mol == "rna" else None
+        ck2 = ((Rchi.reshape(-1, 3) @ Q.T) + np.array([13., -7., 42.])
+               ).reshape(Rchi.shape).astype(np.float32) if mol == "rna" else None
+        f1 = F.featurize(xyz, rn, mol, k=8, chi_atoms=ck)
+        f2 = F.featurize(xyz2, rn, mol, k=8, chi_atoms=ck2)
         eV = np.abs(f1["V"]-f2["V"]).max()
         # 固定同一张邻居表再比边特征：规则螺旋上 i±m 距离完全相等，
         # argsort 谁先谁后由浮点噪声决定。模型对邻居取 mean，本来就不看顺序。
@@ -128,16 +144,21 @@ def main():
     for mol, xyz in (("rna", R), ("protein", P24)):
         L = xyz.shape[0]; rn = np.arange(L, dtype=np.int64)
         m = xyz.copy(); m[..., 0] *= -1
-        dv = np.abs(F.node_features(xyz, mol) - F.node_features(m, mol)).max()
+        ck = Rchi if mol == "rna" else None
+        mck = (ck.copy() if ck is not None else None)
+        if mck is not None:
+            mck[..., 0] *= -1
+        dv = np.abs(F.node_features(xyz, mol, None, ck)
+                    - F.node_features(m, mol, None, mck)).max()
         print("6. %-7s 镜像后 V 差 %.3f（应明显不为 0）" % (mol, dv))
         res6.append(dv > .1)
     ok.append(all(res6))
 
     # 7. 形状与短链兜底
     rn = np.arange(20, dtype=np.int64)
-    fr = F.featurize(R, rn, "rna", k=8)
+    fr = F.featurize(R, rn, "rna", k=8, chi_atoms=Rchi)
     fp = F.featurize(P24, np.arange(24, dtype=np.int64), "protein", k=8)
-    fs = F.featurize(R[:4], np.arange(4, dtype=np.int64), "rna", k=16)
+    fs = F.featurize(R[:4], np.arange(4, dtype=np.int64), "rna", k=16, chi_atoms=Rchi[:4])
     print("7. RNA V%s E%s（边应 %d 维）　蛋白 V%s E%s（边应 %d 维）　L=4,k=16 -> idx%s"
           % (fr["V"].shape, fr["E"].shape, F.edge_dim("rna"),
              fp["V"].shape, fp["E"].shape, F.edge_dim("protein"), fs["idx"].shape))

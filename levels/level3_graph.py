@@ -27,7 +27,7 @@ data.describe(tr, "训练集："); data.describe(va, "验证集：")
 
 # ---------------------------------------------- 先看看数据长什么样
 # A 型螺旋在 eta-theta 平面上应该聚成很紧的一团。这是 RNA 结构最基本的事实。
-ang = np.concatenate([F.torsions_rna(r["coords"]) for r in tr])
+ang = np.concatenate([F.torsions_rna(r["coords"], r.get("chi")) for r in tr])
 eta = np.degrees(np.arctan2(ang[:, 0], ang[:, 3])) % 360
 theta = np.degrees(np.arctan2(ang[:, 1], ang[:, 4])) % 360
 ok = (eta > 0) & (theta > 0)

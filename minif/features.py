@@ -117,26 +117,48 @@ def torsions_protein(coords):
     return _sincos(np.stack([phi, psi, omg], axis=-1))
 
 
-def torsions_rna(coords):
-    """RNA 赝扭转角，返回 [L,6]。
+def torsions_rna(coords, chi_atoms=None):
+    """RNA 的两个赝扭转角 + 真糖苷扭转角 chi，返回 [L,6]（各拆成 sin/cos）。
+
+    **eta / theta —— Duarte & Pyle 的赝扭转角**
 
     RNA 主链有 6 个真扭转角（alpha 到 zeta），维度高且彼此相关，不好用。
     Duarte 和 Pyle 提出用两个赝扭转角概括，只需要 P 和 C4' 两种原子：
+
         eta(i)   = C4'(i-1) - P(i)   - C4'(i)   - P(i+1)
         theta(i) = P(i)     - C4'(i) - P(i+1)   - C4'(i+1)
-    A 型螺旋在 eta-theta 平面上会聚成很紧的一团，这是第 3 关要你亲眼看到的事。
 
-    第三个角是我加的赝 chi：P - C4' - C1' - N糖苷，描述碱基相对糖环的朝向
-    （顺式 / 反式），只用已有的四个原子就能算。
+    相邻两个角共享三个原子，像履带一样沿链滚动。A 型螺旋在 eta-theta
+    平面上会聚成很紧的一团，这是第 3 关要你亲眼看到的事。
+
+    出处：Duarte CM, Pyle AM. Stepping through an RNA structure: a novel
+    approach to conformational analysis. J Mol Biol. 1998;284(5):1465-1478.
+    （Pyle 组后来还出过用 C1' 代替 C4' 的变体，本项目用的是原始 C4' 版。）
+
+    **chi —— 标准糖苷扭转角，不是赝角**
+
+        嘌呤 (A, G)：O4' - C1' - N9 - C4
+        嘧啶 (C, U)：O4' - C1' - N1 - C2
+
+    描述碱基相对糖环平面的朝向。anti 约 ±(90°~180°)，syn 约 -90°~+90°。
+    嘌呤出现 syn 的比例明显高于嘧啶，所以这个角直接带碱基身份的信息。
+
+    chi_atoms: [L, 2, 3]，依次是 O4' 和碱基环上的那个碳（嘌呤 C4 / 嘧啶 C2）。
+    由 prepare_data.py 解析时一并存进 npz。为 None 时 chi 这一列填 0——
+    那说明数据集是旧版的，重跑一次 prepare_data.py 即可。
     """
     L = coords.shape[0]
     P, C4, C1, Nb = coords[:, 0], coords[:, 1], coords[:, 2], coords[:, 3]
-    eta = np.zeros(L); theta = np.zeros(L)
+    eta = np.zeros(L); theta = np.zeros(L); chi = np.zeros(L)
     if L > 2:
         eta[1:-1] = _dihedral(C4[:-2], P[1:-1], C4[1:-1], P[2:])
         theta[1:-1] = _dihedral(P[1:-1], C4[1:-1], P[2:], C4[2:])
-    chi = _dihedral(P, C4, C1, Nb)
-    return _sincos(np.stack([eta, theta, chi], axis=-1))
+    if chi_atoms is not None:
+        ca = np.asarray(chi_atoms, dtype=np.float64)
+        chi = _dihedral(ca[:, 0], C1, Nb, ca[:, 1])   # O4' - C1' - N糖苷 - C碱基
+        chi = np.nan_to_num(chi)                       # 缺原子的位置填 0
+    ang = np.stack([eta, theta, chi], axis=-1)
+    return _sincos(np.nan_to_num(ang))
 
 
 def neighbor_counts(center, radii):
@@ -213,25 +235,39 @@ def edge_features(coords, idx, resnum, mol="rna"):
     return np.concatenate([e, relpos_onehot(resnum, idx)], axis=-1)
 
 
-def node_features(coords, mol="rna", partner=None):
+def node_features(coords, mol="rna", partner=None, chi_atoms=None):
     """点特征。
 
     蛋白 9 维：phi/psi/omega 的 sin+cos（6）+ 三个半径的邻居数（3）
-    RNA 10 维：eta/theta/赝chi 的 sin+cos（6）+ 邻居数（3）+ 配对状态（1）
+    RNA 10 维：eta/theta/chi 的 sin+cos（6）+ 邻居数（3）+ 配对状态（1）
 
     为什么 RNA 多一维配对状态：实测下来它是单个特征里最强的。
     RNA 的四种碱基在茎区和环区都大量出现，「周围挤不挤」区分力很弱；
     但「这个位置配不配对」直接把可选项压窄了——茎区偏 G/C，环区自由得多。
     蛋白那边则相反，埋藏程度和疏水性强相关，所以不需要这一维。
 
-    partner 是从三维坐标的原子间距算出来的结构信息，不是从序列偷看来的，
-    所以作为输入是合法的——逆向设计本来就知道整个结构。
     partner=None 时这一列填 0。
 
-    注意：这是相对 gRNAde 原文的一处简化。原文不给显式的配对标记，
-    让网络自己从几何里发现配对关系。第 7 关的「和原文差在哪」要记这一条。
+    【一处更正，第 2 关查出来的】
+    这里原来写着「partner 是从原子间距算出来的，不是从序列偷看来的，所以合法」。
+    这句话说过头了。pairing.py 判氢键用的原子是嘌呤 N1 / 嘧啶 N3，第二个原子
+    A->N6、G->O6、C->N4、U->O4 —— 四选一，要先知道碱基字母才知道取哪个。
+    也就是说这一列的【实现】确实用到了答案。
+
+    配对这个特征本身是合法的：纯几何判据（C1'-C1' 距离约 10.4 A，加上两个
+    C1'->糖苷N 向量大致反平行、且与 C1'-C1' 轴共线）不需要碱基身份，
+    这四个原子都是两种碱基共有的。所以要修的是实现，不是特征。
+
+    同样的毛病 chi 更严重，而且无解：chi 的第四个原子（嘌呤 C4 / 嘧啶 C2）
+    在碱基环上，而 gRNAde 的输入只有 P / C4' / N1-N9 三个珠子，没有这个原子。
+    第 2 关实测这部分值 3.1~3.6 个百分点，全部拿不到。
+
+    另外，显式给出配对标记本身就是相对 gRNAde 原文的一处简化：原文不给这个标记，
+    让网络自己从几何里发现配对关系。第 3 关有了 kNN 图之后这一维可以直接删掉。
+    第 7 关的「和原文差在哪」要记这两条。
     """
-    t = torsions_rna(coords) if mol == "rna" else torsions_protein(coords)
+    t = (torsions_rna(coords, chi_atoms) if mol == "rna"
+         else torsions_protein(coords))
     cols = [t, neighbor_counts(coords[:, MOL[mol]["center"]], MOL[mol]["radii"])]
     if mol == "rna":
         L = coords.shape[0]
@@ -243,7 +279,8 @@ def node_features(coords, mol="rna", partner=None):
     return np.concatenate(cols, axis=-1)
 
 
-def featurize(coords, resnum, mol="rna", k=16, noise=0.0, rng=None, partner=None):
+def featurize(coords, resnum, mol="rna", k=16, noise=0.0, rng=None,
+              partner=None, chi_atoms=None):
     """一次算完一个分子要用的所有东西。
 
     noise：给坐标加高斯噪声（Å）。ProteinMPNN 训练时加 0.02，
@@ -254,7 +291,7 @@ def featurize(coords, resnum, mol="rna", k=16, noise=0.0, rng=None, partner=None
         coords = coords + rng.randn(*coords.shape).astype(np.float32) * noise
     idx = knn_graph(coords[:, MOL[mol]["center"]], k)
     return {
-        "V": node_features(coords, mol, partner),
+        "V": node_features(coords, mol, partner, chi_atoms),
         "E": edge_features(coords, idx, resnum, mol),
         "idx": idx,
     }

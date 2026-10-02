@@ -19,7 +19,7 @@ CE = nn.CrossEntropyLoss()
 def prep(rec, mol="rna", k=16, noise=0.0, rng=None, device="cpu"):
     """一条链 -> 可以直接喂模型的张量。"""
     f = F.featurize(rec["coords"], rec["resnum"], mol=mol, k=k, noise=noise, rng=rng,
-                    partner=rec.get("partner"))
+                    partner=rec.get("partner"), chi_atoms=rec.get("chi"))
     t = lambda x, d: torch.as_tensor(x, dtype=d, device=device)
     return (t(f["V"], torch.float32), t(f["E"], torch.float32), t(f["idx"], torch.long),
             t(F.seq_to_idx(rec["seq"], mol), torch.long))
